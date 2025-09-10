@@ -1,0 +1,12 @@
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+mediapipe==0.10.21
+opencv-python-headless==4.11.0.86
+numpy==1.26.4
+google-cloud-texttospeech==2.29.0
+python-multipart==0.0.20
+python-dotenv==1.1.1
+requests==2.32.4
+aiofiles==23.1.0
+Pillow==11.2.1
+typing_extensions==4.14.0
