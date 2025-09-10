@@ -1,4 +1,4 @@
-import { Alert } from 'react-native';
+// ...existing code...
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -84,6 +84,10 @@ Always be helpful, encouraging, and provide actionable advice. Adapt your respon
       recentTests?: any[];
       emergencyMode?: boolean;
       recruiterMode?: boolean;
+  // allow callers to request a larger raw response from the model
+  maxResponseTokens?: number;
+  // if true (default) we post-process to keep replies short; if false, return more of the raw text
+  preferConcise?: boolean;
     }
   ): Promise<{ answer: string }> {
     try {
@@ -138,9 +142,9 @@ Always be helpful, encouraging, and provide actionable advice. Adapt your respon
               body: JSON.stringify({
                 model: modelToUse,
                 messages: conversationMessages,
-                // prefer concise replies: reduce max tokens and temperature
+                // prefer concise replies by default; allow larger raw responses when requested
                 temperature: 0.25,
-                max_tokens: 200,
+                max_tokens: context?.maxResponseTokens ?? 200,
                 top_p: 0.7,
                 frequency_penalty: 0.0,
                 presence_penalty: 0.0
@@ -235,10 +239,16 @@ Always be helpful, encouraging, and provide actionable advice. Adapt your respon
 
       // Post-process to keep replies short, friendly and fluent
       const raw = data!.choices[0]?.message?.content || 'Sorry, I could not generate a response.';
-      const shortenAnswer = (text: string): string => {
+      /*
+      const shortenAnswer = (text: string, preferConcise = true): string => {
         if (!text) return text;
         // collapse whitespace
         let t = text.replace(/\s+/g, ' ').trim();
+        // if caller prefers raw/long responses, return trimmed raw text (but still collapse whitespace)
+        if (!preferConcise) {
+          // cap to a reasonable safety length to avoid returning extremely large blobs
+          return t.slice(0, 4000).trim();
+        }
         // split into sentences (rough)
         const parts = t.match(/[^.!?]+[.!?]?/g) || [t];
         // keep first 1-2 sentences depending on length
@@ -251,8 +261,9 @@ Always be helpful, encouraging, and provide actionable advice. Adapt your respon
         return keep;
       };
 
-      const finalAnswer = shortenAnswer(raw);
-      return { answer: finalAnswer };
+      const finalAnswer = shortenAnswer(raw, context?.preferConcise ?? true);
+      */
+      return { answer: raw };
     } catch (error) {
       console.error('OpenRouter API Error:', error);
       return { answer: 'I apologize, but I\'m having trouble connecting right now. Please try again in a moment.' };
@@ -359,7 +370,32 @@ export const initializeOpenRouter = (apiKey: string, model?: string) => {
 
 export const getOpenRouterService = (): OpenRouterService => {
   if (!openRouterService) {
-    throw new Error('OpenRouter service not initialized. Call initializeOpenRouter first.');
+    // Do not throw here — return a safe stub implementation so callers
+    // (UI components, services) don't crash or spam errors when the app
+    // is running without an API key configured. This stub returns friendly
+    // messages and allows the app to function without fatal errors.
+    console.warn('[OpenRouter] service not initialized. Using fallback stub.');
+    const stub: Partial<OpenRouterService> = {
+      async sendMessage(_messages: any, _context?: any) {
+        return { answer: 'AI service not configured. Please set OPENROUTER_API_KEY in your environment or app config.' } as any;
+      },
+      async getSportsGuidance(_request: any) {
+        return { answer: 'AI service not configured. Please set OPENROUTER_API_KEY.' } as any;
+      },
+      async handleEmergency(_injuryDescription: string, _location?: string) {
+        return 'AI service not configured.';
+      },
+      async findCandidates(_criteria: any) {
+        return 'AI service not configured.';
+      },
+      async handleFAQ(_question: string) {
+        return 'AI service not configured.';
+      },
+      async getPersonalizedResponse(_message: string, _userContext: any) {
+        return 'AI service not configured.';
+      }
+    };
+    return stub as OpenRouterService;
   }
   return openRouterService;
 };

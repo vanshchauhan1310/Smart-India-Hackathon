@@ -99,9 +99,17 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
             role: m.isUser ? ('user' as 'user') : ('assistant' as 'assistant'),
             content: m.text
           }));
-          const openRouter = getOpenRouterService();
-          const aiResult = await openRouter.sendMessage(chatHistory);
+          let aiResult: { answer: string; videos?: any[] } = { answer: '' };
+          try {
+            const openRouter = getOpenRouterService();
+            aiResult = await openRouter.sendMessage(chatHistory);
+          } catch (serviceErr) {
+            // If service isn't initialized, return a friendly message to the UI.
+            console.warn('[Chatbot] OpenRouter unavailable:', (serviceErr as Error).message);
+            aiResult = { answer: 'AI service is not configured. Please contact the app administrator.' };
+          }
           // sanitize answer to avoid duplicated content inside the same bubble
+          /*
           const sanitizeAnswer = (raw: string): string => {
             if (!raw) return raw;
             let text = raw.trim();
@@ -134,7 +142,8 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
             }
             return text;
           };
-          const cleaned = sanitizeAnswer(aiResult.answer);
+          */
+          const cleaned = aiResult.answer;
           console.debug('[Chatbot] raw answer length', (aiResult.answer || '').length, 'cleaned length', (cleaned || '').length);
           const aiResponse: Message = {
             id: (Date.now() + 1).toString(),
@@ -175,7 +184,9 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
   };
 
   const formatTime = (date: Date): string => {
-    return new Intl.DateTimeFormat('en-US', {
+  // accept Date | string | number and coerce to Date to avoid runtime errors
+  const d = date instanceof Date ? date : new Date(date as any);
+  return new Intl.DateTimeFormat('en-US', {
       hour: '2-digit',
       minute: '2-digit',
     }).format(date);
@@ -185,15 +196,17 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
   // unordered lists (- or *), and numbered lists (1.). Returns an array of React nodes.
   const parseInline = (text: string): React.ReactNode[] => {
     // split by bold/italic tokens while keeping them
-    const tokenRegex = /(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)/g;
+    const tokenRegex = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
     const parts = text.split(tokenRegex).filter(Boolean);
     return parts.map((part, idx) => {
-      if (/^\*\*.*\*\*$/.test(part) || /^__.*__$/.test(part)) {
-        const inner = part.replace(/^\*\*|\*\*$|^__|__$/g, '');
+      // Bold: **text** or __text__
+      if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
+        const inner = part.slice(2, -2);
         return <Text key={idx} style={{ fontWeight: '700' }}>{inner}</Text>;
       }
-      if (/^\*[^*]+\*$/.test(part) || /^_[^_]+_$/.test(part)) {
-        const inner = part.replace(/^\*|\*$|^_|_$ /g, '').replace(/^_|_$/g, '');
+      // Italic: *text* or _text_
+      if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
+        const inner = part.slice(1, -1);
         return <Text key={idx} style={{ fontStyle: 'italic' }}>{inner}</Text>;
       }
       return <Text key={idx}>{part}</Text>;

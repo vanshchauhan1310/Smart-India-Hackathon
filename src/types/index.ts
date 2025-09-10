@@ -64,6 +64,7 @@ export interface Language {
   name: string;
   nativeName: string;
   flag: string;
+  fontFamily?: string;
 }
 
 export interface AuthState {

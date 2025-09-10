@@ -9,6 +9,7 @@ import {
   StatusBar,
   Alert,
   Dimensions,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,6 +20,7 @@ import { RootStackParamList } from '../../types';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../../constants';
+import * as ImagePicker from 'expo-image-picker';
 
 type OnboardingScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Onboarding'>;
 
@@ -141,20 +143,39 @@ const OnboardingScreen: React.FC = () => {
     }
   };
 
+  const handleChoosePhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Sorry, we need camera roll permissions to make this work!');
+      return;
+    }
+
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      handleInputChange('profileImage', result.assets[0].uri);
+    }
+  };
+
   const renderStepContent = () => {
     switch (currentStep) {
       case 0:
         return (
           <View style={styles.stepContent}>
             <View style={styles.avatarSection}>
-              <View style={styles.avatarContainer}>
+              <TouchableOpacity onPress={handleChoosePhoto} style={styles.avatarContainer}>
                 {formData.profileImage ? (
-                  <Text style={styles.avatarText}>📷</Text>
+                  <Image source={{ uri: formData.profileImage }} style={styles.avatarImage} />
                 ) : (
                   <Ionicons name="person" size={40} color={COLORS.textLight} />
                 )}
-              </View>
-              <TouchableOpacity style={styles.changePhotoButton}>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.changePhotoButton} onPress={handleChoosePhoto}>
                 <Text style={styles.changePhotoText}>Change Photo</Text>
               </TouchableOpacity>
             </View>
@@ -438,6 +459,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: SPACING.md,
     ...SHADOWS.md,
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   avatarText: {
     fontSize: 40,

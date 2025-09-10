@@ -76,6 +76,7 @@ const LanguageSelectionScreen: React.FC = () => {
                       style={[
                         styles.languageName,
                         selectedLanguage === language.code && styles.selectedLanguageName,
+                        language.fontFamily ? { fontFamily: language.fontFamily } : {},
                       ]}
                     >
                       {language.nativeName}
