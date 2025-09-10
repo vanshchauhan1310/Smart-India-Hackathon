@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -24,6 +23,9 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "OPENROUTER_API_KEY": "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"
     }
   }
 }

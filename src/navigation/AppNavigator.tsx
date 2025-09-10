@@ -32,6 +32,7 @@ import SettingsScreen from '../screens/admin/SettingsScreen';
 import CreateEventScreen from '../screens/admin/CreateEventScreen';
 import AdminLeaderboardScreen from '../screens/admin/AdminLeaderboardScreen';
 
+
 // Enable native screens for better performance and fewer runtime issues
 enableScreens(true);
 

@@ -9,16 +9,31 @@ import {
   KeyboardAvoidingView,
   Platform,
   Dimensions,
+  Image,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../../constants';
+import { getOpenRouterService } from '../../services/openRouterService';
+
+
+interface VideoCard {
+  id: string;
+  title: string;
+  description: string;
+  thumbnail: string;
+  channelTitle: string;
+  publishedAt: string;
+  duration: string;
+}
 
 interface Message {
   id: string;
   text: string;
   isUser: boolean;
   timestamp: Date;
+  videos?: VideoCard[];
 }
 
 interface ChatbotWindowProps {
@@ -42,11 +57,17 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [localMessages, setLocalMessages] = useState<Message[]>(messages);
+  const [isLoading, setIsLoading] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
 
+  // Only sync messages from props when the chat window is opened (visible becomes true)
   useEffect(() => {
-    setLocalMessages(messages);
-  }, [messages]);
+    if (visible) {
+      setLocalMessages(messages);
+    }
+    // Do not add messages to dependency array to avoid infinite loop
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   useEffect(() => {
     if (visible && localMessages.length > 0) {
@@ -57,41 +78,200 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
     }
   }, [visible, localMessages]);
 
-  const handleSendMessage = () => {
-    if (inputText.trim()) {
-      const newMessage: Message = {
-        id: Date.now().toString(),
-        text: inputText.trim(),
-        isUser: true,
-        timestamp: new Date(),
-      };
-
-      setLocalMessages(prev => [...prev, newMessage]);
-      
-      if (onSendMessage) {
-        onSendMessage(inputText.trim());
-      }
-
-      setInputText('');
-
-      // Simulate AI response (replace with actual AI integration)
-      setTimeout(() => {
-        const aiResponse: Message = {
-          id: (Date.now() + 1).toString(),
-          text: "Thank you for your question! I'm here to help you with sports training, technique analysis, and performance optimization. How can I assist you today?",
-          isUser: false,
-          timestamp: new Date(),
-        };
-        setLocalMessages(prev => [...prev, aiResponse]);
-      }, 1000);
-    }
+  const handleSendMessage = async () => {
+    if (!inputText.trim()) return;
+    const newMessage: Message = {
+      id: Date.now().toString(),
+      text: inputText.trim(),
+      isUser: true,
+      timestamp: new Date(),
+    };
+    // Use a callback to ensure latest state
+    setLocalMessages(prev => {
+      const updated = [...prev, newMessage];
+      // Call AI after state update
+      (async () => {
+        setIsLoading(true);
+        if (onSendMessage) onSendMessage(newMessage.text);
+        try {
+          // Always use the latest messages for chat history
+          const chatHistory = [...updated].map(m => ({
+            role: m.isUser ? ('user' as 'user') : ('assistant' as 'assistant'),
+            content: m.text
+          }));
+          let aiResult: { answer: string; videos?: any[] } = { answer: '' };
+          try {
+            const openRouter = getOpenRouterService();
+            aiResult = await openRouter.sendMessage(chatHistory);
+          } catch (serviceErr) {
+            // If service isn't initialized, return a friendly message to the UI.
+            console.warn('[Chatbot] OpenRouter unavailable:', (serviceErr as Error).message);
+            aiResult = { answer: 'AI service is not configured. Please contact the app administrator.' };
+          }
+          // sanitize answer to avoid duplicated content inside the same bubble
+          /*
+          const sanitizeAnswer = (raw: string): string => {
+            if (!raw) return raw;
+            let text = raw.trim();
+            // remove exact consecutive duplicate paragraphs
+            const paras = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+            const dedupParas: string[] = [];
+            for (let i = 0; i < paras.length; i++) {
+              if (i === 0 || paras[i] !== paras[i - 1]) dedupParas.push(paras[i]);
+            }
+            text = dedupParas.join('\n\n');
+            // if entire text is an exact repetition of its halves, keep one half
+            if (text.length > 80) {
+              const half = Math.floor(text.length / 2);
+              const first = text.slice(0, half).trim();
+              const second = text.slice(half).trim();
+              if (first === second) {
+                text = first;
+              }
+            }
+            // remove consecutive duplicate sentences
+            const sentences = text.split(/([.!?]\s+)/);
+            const out: string[] = [];
+            for (let i = 0; i < sentences.length; i++) {
+              const s = sentences[i];
+              if (!s.trim()) continue;
+              if (out.length === 0 || s.trim() !== out[out.length - 1].trim()) out.push(s);
+            }
+            if (out.length > 0) {
+              text = out.join('');
+            }
+            return text;
+          };
+          */
+          const cleaned = aiResult.answer;
+          console.debug('[Chatbot] raw answer length', (aiResult.answer || '').length, 'cleaned length', (cleaned || '').length);
+          const aiResponse: Message = {
+            id: (Date.now() + 1).toString(),
+            text: cleaned,
+            isUser: false,
+            timestamp: new Date(),
+            videos: 'videos' in aiResult ? (aiResult as any).videos : undefined,
+          };
+          setLocalMessages(current => {
+            const last = current[current.length - 1];
+            if (last && !last.isUser && last.text?.trim() === aiResponse.text?.trim()) {
+              // duplicate assistant response — skip appending
+              return current;
+            }
+            return [...current, aiResponse];
+          });
+        } catch (err) {
+          const errorMsg: Message = {
+            id: (Date.now() + 2).toString(),
+            text: 'Sorry, I am having trouble responding right now.',
+            isUser: false,
+            timestamp: new Date(),
+          };
+          setLocalMessages(current => {
+            const last = current[current.length - 1];
+            if (last && !last.isUser && last.text?.trim() === errorMsg.text?.trim()) {
+              return current;
+            }
+            return [...current, errorMsg];
+          });
+        } finally {
+          setIsLoading(false);
+        }
+      })();
+      return updated;
+    });
+    setInputText('');
   };
 
   const formatTime = (date: Date): string => {
-    return new Intl.DateTimeFormat('en-US', {
+  // accept Date | string | number and coerce to Date to avoid runtime errors
+  const d = date instanceof Date ? date : new Date(date as any);
+  return new Intl.DateTimeFormat('en-US', {
       hour: '2-digit',
       minute: '2-digit',
     }).format(date);
+  };
+
+  // Simple markdown-like renderer: supports headers (#, ##, ###), bold (**text**), italics (*text*),
+  // unordered lists (- or *), and numbered lists (1.). Returns an array of React nodes.
+  const parseInline = (text: string): React.ReactNode[] => {
+    // split by bold/italic tokens while keeping them
+    const tokenRegex = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
+    const parts = text.split(tokenRegex).filter(Boolean);
+    return parts.map((part, idx) => {
+      // Bold: **text** or __text__
+      if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
+        const inner = part.slice(2, -2);
+        return <Text key={idx} style={{ fontWeight: '700' }}>{inner}</Text>;
+      }
+      // Italic: *text* or _text_
+      if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
+        const inner = part.slice(1, -1);
+        return <Text key={idx} style={{ fontStyle: 'italic' }}>{inner}</Text>;
+      }
+      return <Text key={idx}>{part}</Text>;
+    });
+  };
+
+  const renderFormattedText = (text: string) : React.ReactNode => {
+    const lines = text.split(/\r?\n/);
+    const nodes: React.ReactNode[] = [];
+    let listIndex = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) {
+        nodes.push(<Text key={`br-${i}`} style={{ height: 8 }} />);
+        continue;
+      }
+
+      // Headers
+      const headerMatch = line.match(/^(#{1,6})\s+(.*)$/);
+      if (headerMatch) {
+        const level = headerMatch[1].length;
+        const content = headerMatch[2];
+        const size = level === 1 ? FONT_SIZES.xl : level === 2 ? FONT_SIZES.lg : FONT_SIZES.md;
+        nodes.push(
+          <Text key={`h-${i}`} style={{ fontSize: size, fontWeight: '700', marginVertical: 6, color: COLORS.text }}>
+            {parseInline(content)}
+          </Text>
+        );
+        continue;
+      }
+
+      // Unordered list
+      const ulMatch = line.match(/^[-*]\s+(.*)$/);
+      if (ulMatch) {
+        const content = ulMatch[1];
+        nodes.push(
+          <View key={`ul-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', marginVertical: 2 }}>
+            <Text style={{ marginRight: 8, color: COLORS.textSecondary }}>•</Text>
+            <Text style={{ flex: 1, color: COLORS.text }}>{parseInline(content)}</Text>
+          </View>
+        );
+        continue;
+      }
+
+      // Numbered list
+      const olMatch = line.match(/^\d+\.\s+(.*)$/);
+      if (olMatch) {
+        const content = olMatch[1];
+        listIndex += 1;
+        nodes.push(
+          <View key={`ol-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', marginVertical: 2 }}>
+            <Text style={{ marginRight: 8, color: COLORS.textSecondary }}>{listIndex}.</Text>
+            <Text style={{ flex: 1, color: COLORS.text }}>{parseInline(content)}</Text>
+          </View>
+        );
+        continue;
+      }
+      // Paragraph
+      nodes.push(
+        <Text key={`p-${i}`} style={{ color: COLORS.text, fontSize: FONT_SIZES.md, marginVertical: 2 }}>
+          {parseInline(line)}
+        </Text>
+      );
+    }
+    return <View>{nodes}</View>;
   };
 
   if (!visible) return null;
@@ -156,28 +336,80 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
                   message.isUser ? styles.userMessage : styles.botMessage,
                 ]}
               >
-                <View
-                  style={[
-                    styles.messageBubble,
-                    message.isUser ? styles.userBubble : styles.botBubble,
-                  ]}
-                >
-                  <Text
+                <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+                  {/* Chat bubble icon for user and bot */}
+                  {message.isUser ? (
+                    <View style={{ marginRight: 6 }}>
+                      <Ionicons name="person-circle" size={24} color={COLORS.primary} />
+                    </View>
+                  ) : (
+                    <View style={{ marginRight: 6 }}>
+                      <Ionicons name="chatbubble-ellipses" size={24} color={COLORS.primaryDark} />
+                    </View>
+                  )}
+                  <View
                     style={[
-                      styles.messageText,
-                      message.isUser ? styles.userText : styles.botText,
+                      styles.messageBubble,
+                      message.isUser ? styles.userBubble : styles.botBubble,
                     ]}
                   >
-                    {message.text}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.timestamp,
-                      message.isUser ? styles.userTimestamp : styles.botTimestamp,
-                    ]}
-                  >
-                    {formatTime(message.timestamp)}
-                  </Text>
+                    {message.isUser ? (
+                      <Text
+                        style={[
+                          styles.messageText,
+                          styles.userText,
+                        ]}
+                      >
+                        {message.text}
+                      </Text>
+                    ) : (
+                      <>
+                        {/* Render formatted bot text (supports headers, bold, italics, lists) */}
+                        <View style={{ marginBottom: 4 }}>
+                          {renderFormattedText(message.text)}
+                        </View>
+                        {/* Render YouTube video cards if present */}
+                        {message.videos && message.videos.length > 0 && (
+                          <View style={{ marginTop: 8 }}>
+                            {message.videos.map((video) => (
+                              <View key={video.id} style={{ marginBottom: 10, backgroundColor: COLORS.surface, borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border }}>
+                                <View style={{ flexDirection: 'row' }}>
+                                  <TouchableOpacity
+                                    onPress={() => {
+                                      const url = `https://www.youtube.com/watch?v=${video.id}`;
+                                      Linking.openURL(url);
+                                    }}
+                                    activeOpacity={0.8}
+                                  >
+                                    <View style={{ width: 120, height: 70, backgroundColor: '#000' }}>
+                                      <Image
+                                        source={{ uri: video.thumbnail }}
+                                        style={{ width: '100%', height: '100%' }}
+                                        resizeMode="cover"
+                                      />
+                                    </View>
+                                  </TouchableOpacity>
+                                  <View style={{ flex: 1, padding: 8, justifyContent: 'center' }}>
+                                    <Text style={{ fontWeight: 'bold', color: COLORS.text }}>{video.title}</Text>
+                                    <Text style={{ color: COLORS.textSecondary, fontSize: 12 }}>{video.channelTitle}</Text>
+                                    <Text style={{ color: COLORS.textSecondary, fontSize: 10 }}>{video.publishedAt.substring(0, 10)} • {video.duration}</Text>
+                                  </View>
+                                </View>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </>
+                    )}
+                    <Text
+                      style={[
+                        styles.timestamp,
+                        message.isUser ? styles.userTimestamp : styles.botTimestamp,
+                      ]}
+                    >
+                      {formatTime(message.timestamp)}
+                    </Text>
+                  </View>
                 </View>
               </View>
             ))
@@ -195,19 +427,20 @@ const ChatbotWindow: React.FC<ChatbotWindowProps> = ({
               onChangeText={setInputText}
               multiline
               maxLength={500}
+              editable={!isLoading}
             />
             <TouchableOpacity
               onPress={handleSendMessage}
               style={[
                 styles.sendButton,
-                { opacity: inputText.trim() ? 1 : 0.5 }
+                { opacity: inputText.trim() && !isLoading ? 1 : 0.5 }
               ]}
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() || isLoading}
             >
               <Ionicons
-                name="send"
+                name={isLoading ? "hourglass" : "send"}
                 size={20}
-                color={inputText.trim() ? COLORS.white : COLORS.textLight}
+                color={inputText.trim() && !isLoading ? COLORS.white : COLORS.textLight}
               />
             </TouchableOpacity>
           </View>
