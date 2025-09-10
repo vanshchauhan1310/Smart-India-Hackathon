@@ -55,7 +55,8 @@ class OpenRouterService {
 Keep responses concise and helpful.`,
 
       sports: `You are a specialized sports guidance AI assistant. Provide expert advice on:
-Always personalize advice based on the user's sport, skill level, and goals.`,
+Always personalize advice based on the user's sport, skill level, and goals.
+Please format your answers to be concise and use bullet points for clarity.`,
   // add a short directive to prefer concise, friendly replies
 
       emergency: `You are an emergency response AI for sports-related incidents. Provide:
@@ -144,7 +145,7 @@ Always be helpful, encouraging, and provide actionable advice. Adapt your respon
                 messages: conversationMessages,
                 // prefer concise replies by default; allow larger raw responses when requested
                 temperature: 0.25,
-                max_tokens: context?.maxResponseTokens ?? 200,
+                max_tokens: context?.maxResponseTokens ?? 1024,
                 top_p: 0.7,
                 frequency_penalty: 0.0,
                 presence_penalty: 0.0
