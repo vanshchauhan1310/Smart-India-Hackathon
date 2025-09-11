@@ -10,12 +10,10 @@ import {
   Dimensions,
   Animated,
 } from 'react-native';
-import { Camera, CameraType } from 'expo-camera';
-// using expo-speech for on-device TTS
+import { CameraView, CameraType, Camera } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
 import poseApiService, { uploadVideoForAnalysis, uploadImageForCheatCheck } from '../../services/poseApiService';
-// use on-device speech
-import * as Speech from 'expo-speech';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,10 +27,10 @@ type CameraTestScreenRouteProp = RouteProp<RootStackParamList, 'CameraTest'>;
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 const CameraTestScreen: React.FC = () => {
-  const navigation = useNavigation<CameraTestScreenNavigationProp>();
-  const route = useRoute<CameraTestScreenRouteProp>();
+  const navigation = useNavigation() as CameraTestScreenNavigationProp;
+  const route = useRoute() as CameraTestScreenRouteProp;
   const testId = route.params?.testId ?? (TESTS.length ? TESTS[0].id : '');
-  
+
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [testStarted, setTestStarted] = useState(false);
@@ -45,40 +43,78 @@ const CameraTestScreen: React.FC = () => {
   const [baselineImageUri, setBaselineImageUri] = useState<string | null>(null);
   const cheatIntervalRef = useRef<number | null>(null);
   const endCountdownIvRef = useRef<number | null>(null);
-  const timeRemainingRef = useRef<number>(timeRemaining);
   const squatStateRef = useRef<'up' | 'down' | null>(null);
-  const [overlayKeypoints, setOverlayKeypoints] = useState<Record<string, {x:number,y:number}> | null>(null);
+  const [overlayKeypoints, setOverlayKeypoints] = useState<Record<string, { x: number, y: number }> | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [showOverlay, setShowOverlay] = useState(true);
-  
-  // use a loose ref type to avoid compile-time issues with Camera typings in this workspace
+  const [cameraType, setCameraType] = useState<string>('back');
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [showDisclaimer, setShowDisclaimer] = useState(true);
+  const [cameraActivated, setCameraActivated] = useState(false);
+  const poseDetectionIntervalRef = useRef<number | null>(null);
+  const [recordingStarted, setRecordingStarted] = useState(false);
+
   const cameraRef = useRef<any>(null);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  // Resolve Camera component and camera-ready state early so hooks order remains stable
-  // across early returns (permission prompts). Do not put these behind any conditional.
-  let CameraWrapper: any = View;
-  try {
-    if (Camera && typeof Camera === 'function') {
-      CameraWrapper = Camera as any;
-    } else if ((Camera as any)?.Camera && typeof (Camera as any).Camera === 'function') {
-      CameraWrapper = (Camera as any).Camera;
-    } else if ((Camera as any)?.default && typeof (Camera as any).default === 'function') {
-      CameraWrapper = (Camera as any).default;
-    }
-  } catch (e) {
-    CameraWrapper = View;
-  }
-
-  const [cameraReady, setCameraReady] = useState(false);
 
   const test = TESTS.find(t => t.id === testId);
   const recordingRef = useRef<any>(null);
 
   useEffect(() => {
-    getCameraPermissions();
+    loadSound();
   }, []);
+
+  useEffect(() => {
+    if (cameraActivated) {
+      getCameraPermissions();
+    }
+  }, [cameraActivated]);
+
+  const getCameraPermissions = async () => {
+    const { status } = await Camera.requestCameraPermissionsAsync();
+    setHasPermission(status === 'granted');
+  };
+
+  const loadSound = async () => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(require('../../../assets/beep.mp3'));
+      setSound(sound);
+    } catch (error) {
+      console.warn('Failed to load beep sound:', error);
+    }
+  };
+
+  const playBeep = async () => {
+    if (sound) {
+      await sound.replayAsync();
+    }
+  };
+
+  const startEndCountdown = async (callback: () => void) => {
+    setEndCountdown(3);
+    const interval = setInterval(() => {
+      setEndCountdown(prev => {
+        if (prev > 1) {
+          playBeep();
+          return prev - 1;
+        } else {
+          clearInterval(interval);
+          callback();
+          return 0;
+        }
+      });
+    }, 1000);
+  };
+
+  const toggleCamera = () => {
+    setCameraType(current => current === 'back' ? 'front' : 'back');
+  };
+
+  const acceptDisclaimer = () => {
+    setShowDisclaimer(false);
+    setCameraActivated(true);
+  };
 
   // cleanup intervals on unmount
   useEffect(() => {
@@ -126,20 +162,32 @@ const CameraTestScreen: React.FC = () => {
     }
   }, [isRecording]);
 
-  const getCameraPermissions = async () => {
-    const { status } = await Camera.requestCameraPermissionsAsync();
-    setHasPermission(status === 'granted');
+  const handleStartTest = async () => {
+    if (!test || !hasPermission) return;
+
+    setCountdown(3);
+    const countdownInterval = setInterval(() => {
+      setCountdown(prev => {
+        if (prev > 1) {
+          playBeep();
+          return prev - 1;
+        } else {
+          clearInterval(countdownInterval);
+          startTestAfterCountdown();
+          return 0;
+        }
+      });
+    }, 1000);
   };
 
-  useEffect(() => {
-    console.log(`[CameraTest] Permission: ${hasPermission}, Ready: ${cameraReady}`);
-  }, [hasPermission, cameraReady]);
+  const startTestAfterCountdown = async () => {
+    if (!test || !cameraRef.current) {
+      console.warn('[CameraTest] Cannot start test: camera not ready');
+      Alert.alert('Camera Not Ready', 'Please wait for the camera to initialize.');
+      return;
+    }
 
-  const handleStartTest = async () => {
-    if (!test || !cameraReady) return;
-
-    // Capture baseline image
-    if (cameraRef.current) {
+    if (typeof cameraRef.current.takePictureAsync === 'function') {
       try {
         const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.4 });
         setBaselineImageUri(photo.uri);
@@ -147,69 +195,76 @@ const CameraTestScreen: React.FC = () => {
       } catch (err) {
         console.warn('[CameraTest] failed to capture baseline image', err);
       }
+    } else {
+      console.warn('[CameraTest] Camera ref not ready for baseline capture');
     }
 
     setShowOverlay(false);
     setTestStarted(true);
     setTimeRemaining(test.duration);
     setCurrentStep(0);
-    // start cheat snapshot routine
     startCheatDetectionSnapshots();
-    // start recording video
+    startPoseDetectionSnapshots();
+
     try {
-      if (cameraRef.current && cameraRef.current.recordAsync) {
+      if (cameraRef.current.recordAsync) {
         setIsRecording(true);
+        setRecordingStarted(true);
         const rec = await cameraRef.current.recordAsync({ quality: '480p', maxDuration: test.duration + 15 });
-        // store recording uri for upload
         recordingRef.current = rec?.uri;
         setIsRecording(false);
+        setRecordingStarted(false);
       }
     } catch (err) {
       console.warn('[CameraTest] recording failed', err);
       setIsRecording(false);
+      setRecordingStarted(false);
     }
   };
 
   const handleTestComplete = async () => {
-    // stop recording if ongoing
-    try {
-      if (cameraRef.current && cameraRef.current.stopRecording) {
-        // expo camera stopRecording is synchronous on some platforms; call safely
-        try { cameraRef.current.stopRecording(); } catch (e) { /* ignore */ }
+    await startEndCountdown(async () => {
+      if (recordingStarted) {
+        try {
+          if (cameraRef.current && cameraRef.current.stopRecording) {
+            try { cameraRef.current.stopRecording(); } catch (e) { /* ignore */ }
+          }
+        } catch (e) {
+          console.warn('[CameraTest] stopRecording error', e);
+        }
+        setIsRecording(false);
+        setRecordingStarted(false);
       }
-    } catch (e) {
-      console.warn('[CameraTest] stopRecording error', e);
-    }
-    setIsRecording(false);
-    setTestStarted(false);
-    stopCheatDetectionSnapshots();
+      setTestStarted(false);
+      stopCheatDetectionSnapshots();
+      stopPoseDetectionSnapshots();
 
-    if (recordingRef.current) {
-      setAnalyzing(true);
-      try {
-        const res = await uploadVideoForAnalysis(recordingRef.current);
-        setAnalyzing(false);
-        // navigate to TestReport and pass result
-        (navigation as any).navigate('TestReport', { testId, result: res });
-      } catch (err) {
-        setAnalyzing(false);
-        console.warn('[CameraTest] video upload failed', err);
-        Alert.alert('Upload failed', 'Failed to upload the recorded video for analysis. Please try again.',
-          [{ text: 'OK', onPress: () => navigation.goBack() }]
+      if (recordingRef.current) {
+        setAnalyzing(true);
+        try {
+          const res = await uploadVideoForAnalysis(recordingRef.current);
+          setAnalyzing(false);
+          (navigation as any).navigate('TestReport', { testId, result: res });
+        } catch (err) {
+          setAnalyzing(false);
+          console.warn('[CameraTest] video upload failed', err);
+          Alert.alert('Upload failed', 'Failed to upload the recorded video for analysis. Please try again.',
+            [{ text: 'OK', onPress: () => navigation.goBack() }]
+          );
+        }
+      } else {
+        Alert.alert(
+          'Test Completed!',
+          'Your test has been recorded and is being analyzed. Results will be available shortly.',
+          [
+            {
+              text: 'OK',
+              onPress: () => navigation.goBack(),
+            },
+          ]
         );
       }
-    } else {
-      Alert.alert(
-        'Test Completed!',
-        'Your test has been recorded and is being analyzed. Results will be available shortly.',
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.goBack(),
-          },
-        ]
-      );
-    }
+    });
   };
 
   const handleStopRecording = () => {
@@ -217,22 +272,16 @@ const CameraTestScreen: React.FC = () => {
     handleTestComplete();
   };
 
-  // Cheat detection: capture snapshots intermittently for later analysis
   const startCheatDetectionSnapshots = () => {
-    // clear existing
     if (cheatIntervalRef.current) {
       clearTimeout(cheatIntervalRef.current as number);
       cheatIntervalRef.current = null;
     }
-
     const takeSnapshot = () => {
       captureSnapshotForCheatDetection();
-      // Schedule the next snapshot at a random interval between 15 and 25 seconds
       const randomInterval = Math.random() * 10000 + 15000;
       cheatIntervalRef.current = setTimeout(takeSnapshot, randomInterval) as unknown as number;
     };
-
-    // Start the first snapshot
     takeSnapshot();
   };
 
@@ -243,28 +292,58 @@ const CameraTestScreen: React.FC = () => {
     }
   };
 
+  const startPoseDetectionSnapshots = () => {
+    if (poseDetectionIntervalRef.current) {
+      clearInterval(poseDetectionIntervalRef.current as number);
+      poseDetectionIntervalRef.current = null;
+    }
+    const takePoseSnapshot = async () => {
+      try {
+        if (!cameraRef.current) return;
+        const photo = await cameraRef.current.takePictureAsync({ base64: false, quality: 0.4 });
+        console.debug('[CameraTest] captured pose snapshot', photo.uri);
+        try {
+          const result = await poseApiService.uploadImageForPose(photo.uri);
+          console.log('[CameraTest] Pose keypoints result:', result);
+          if (result && result.keypoints) {
+            processPose(result.keypoints);
+          }
+        } catch (err) {
+          console.warn('[CameraTest] pose detection API failed', err);
+        }
+      } catch (err) {
+        console.warn('[CameraTest] failed to capture snapshot for pose detection', err);
+      }
+    };
+    takePoseSnapshot();
+    poseDetectionIntervalRef.current = setInterval(takePoseSnapshot, 2000) as unknown as number;
+  };
+
+  const stopPoseDetectionSnapshots = () => {
+    if (poseDetectionIntervalRef.current) {
+      clearInterval(poseDetectionIntervalRef.current as number);
+      poseDetectionIntervalRef.current = null;
+    }
+  };
+
   const captureSnapshotForCheatDetection = async () => {
     try {
-      if (!cameraRef.current || !cameraReady) return;
+      if (!cameraRef.current) return;
       const photo = await cameraRef.current.takePictureAsync({ base64: false, quality: 0.4 });
       console.debug('[CameraTest] captured cheat snapshot', photo.uri);
       try {
         const result = await uploadImageForCheatCheck(photo.uri);
         console.log('[CameraTest] Cheat check result:', result);
         if (result && result.cheat) {
-          // warn user
-          Speech.speak(`Warning: ${result.reasons.join(', ')}`, { language: 'en-US', rate: 0.95, pitch: 1.0 });
+          playBeep();
           setWarningsCount(w => {
             const next = w + 1;
-            // if this pushes warnings to 3 or more, immediately disqualify
             if (next >= 3) {
-              // stop test, stop recording and navigate to TestReport with score 0
-              Speech.speak('Disqualified due to repeated cheating warnings.', { language: 'en-US', rate: 0.95, pitch: 1.0 });
+              playBeep();
               setTestStarted(false);
               setIsRecording(false);
               stopCheatDetectionSnapshots();
-              // stop camera recording if possible
-              try { if (cameraRef.current && cameraRef.current.stopRecording) cameraRef.current.stopRecording(); } catch (e) {}
+              try { if (cameraRef.current && cameraRef.current.stopRecording) cameraRef.current.stopRecording(); } catch (e) { }
               const disqResult = {
                 id: `dq-${Date.now()}`,
                 userId: 'unknown',
@@ -277,7 +356,6 @@ const CameraTestScreen: React.FC = () => {
                 isValid: false,
                 feedback: 'Disqualified due to repeated cheating warnings',
               } as any;
-              // navigate to TestReport and pass the result object
               (navigation as any).navigate('TestReport', { testId, result: disqResult });
             }
             return next;
@@ -291,8 +369,7 @@ const CameraTestScreen: React.FC = () => {
     }
   };
 
-  // Simple helper to compute angle between three points (in degrees)
-  const computeAngle = (a: {x:number,y:number}, b: {x:number,y:number}, c: {x:number,y:number}) => {
+  const computeAngle = (a: { x: number, y: number }, b: { x: number, y: number }, c: { x: number, y: number }) => {
     const ab = { x: a.x - b.x, y: a.y - b.y };
     const cb = { x: c.x - b.x, y: c.y - b.y };
     const dot = ab.x * cb.x + ab.y * cb.y;
@@ -303,27 +380,22 @@ const CameraTestScreen: React.FC = () => {
     return (Math.acos(cos) * 180) / Math.PI;
   };
 
-  // Process a pose frame (placeholder): expects keypoints map with named joints
-  // Example input: { leftHip: {x,y}, leftKnee: {x,y}, leftAnkle: {x,y}, rightHip:..., ... }
-  const processPose = (keypoints: Record<string, {x:number,y:number}>) => {
+  const processPose = (keypoints: Record<string, { x: number, y: number }>) => {
     try {
-      // store for overlay rendering (assume normalized coords 0..1)
       setOverlayKeypoints(keypoints);
-      // Example squat detection using knee angle
+      if (!test) return;
       const leftHip = keypoints['leftHip'];
       const leftKnee = keypoints['leftKnee'];
       const leftAnkle = keypoints['leftAnkle'];
       if (leftHip && leftKnee && leftAnkle) {
-        const kneeAngle = computeAngle(leftHip, leftKnee, leftAnkle); // degrees
-        // thresholds are heuristic; tune with real data
-        const downThreshold = 100; // knee angle when squatting down
-        const upThreshold = 160; // knee angle when standing up
+        const kneeAngle = computeAngle(leftHip, leftKnee, leftAnkle);
+        const downThreshold = 100;
+        const upThreshold = 160;
         const prev = squatStateRef.current;
         if (kneeAngle < downThreshold && prev !== 'down') {
           squatStateRef.current = 'down';
         }
         if (kneeAngle > upThreshold && squatStateRef.current === 'down') {
-          // completed one rep
           setRepCount(c => c + 1);
           squatStateRef.current = 'up';
         }
@@ -347,6 +419,45 @@ const CameraTestScreen: React.FC = () => {
     }).start();
     setShowOverlay(!showOverlay);
   };
+
+  if (showDisclaimer) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.disclaimerContainer}>
+          <View style={styles.disclaimerContent}>
+            <Ionicons name="camera" size={64} color={COLORS.primary} />
+            <Text style={styles.disclaimerTitle}>Camera Usage Agreement</Text>
+            <Text style={styles.disclaimerText}>
+              By proceeding, you agree to:
+            </Text>
+            <View style={styles.disclaimerPoints}>
+              <Text style={styles.disclaimerPoint}>• Allow camera access for pose detection</Text>
+              <Text style={styles.disclaimerPoint}>• Enable video recording during tests</Text>
+              <Text style={styles.disclaimerPoint}>• Permit AI analysis of your movements</Text>
+              <Text style={styles.disclaimerPoint}>• Accept automated feedback and scoring</Text>
+            </View>
+            <Text style={styles.disclaimerNote}>
+              Your privacy is protected. No personal data is stored without consent.
+            </Text>
+            <View style={styles.disclaimerButtons}>
+              <TouchableOpacity
+                style={styles.disclaimerDeclineButton}
+                onPress={() => navigation.goBack()}
+              >
+                <Text style={styles.disclaimerDeclineText}>Decline</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.disclaimerAcceptButton}
+                onPress={acceptDisclaimer}
+              >
+                <Text style={styles.disclaimerAcceptText}>Accept & Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (hasPermission === null) {
     return (
@@ -377,92 +488,62 @@ const CameraTestScreen: React.FC = () => {
     );
   }
 
-  const onCameraReady = () => {
-    setCameraReady(true);
-    console.debug('[CameraTest] camera ready');
-  };
-
-  // Render exercise-specific guide overlay (simple shapes that approximate a posture outline)
-  const renderExerciseGuide = () => {
-    if (!test) return null;
-    const category = test.category || 'fitness';
-    switch (test.id) {
-      case '1': // Vertical Jump
-        return (
-          <View style={styles.exerciseGuideContainer} pointerEvents="none">
-            <View style={styles.jumpTopLine} />
-            <View style={styles.jumpTargetBox} />
-            <Text style={styles.exerciseLabel}>Jump as high as possible — touch the top line</Text>
-          </View>
-        );
-      case '2': // Push-ups
-        return (
-          <View style={styles.exerciseGuideContainer} pointerEvents="none">
-            <View style={styles.pushupLine} />
-            <Text style={styles.exerciseLabel}>Keep body straight — chest to the line</Text>
-          </View>
-        );
-      case '3': // Agility
-        return (
-          <View style={styles.exerciseGuideContainer} pointerEvents="none">
-            <View style={styles.agilityConesRow}>
-              <View style={styles.cone} />
-              <View style={styles.cone} />
-              <View style={styles.cone} />
-            </View>
-            <Text style={styles.exerciseLabel}>Run between cones</Text>
-          </View>
-        );
+  const getPoseConfig = (id: string) => {
+    switch (id) {
+      case '2': // Pushups
+        return {
+          edges: [
+            ['kp_5', 'kp_7'], ['kp_7', 'kp_9'], ['kp_6', 'kp_8'], ['kp_8', 'kp_10'],
+            ['kp_5', 'kp_6'], ['kp_11', 'kp_12'], ['kp_11', 'kp_13'], ['kp_13', 'kp_15'],
+            ['kp_12', 'kp_14'], ['kp_14', 'kp_16'],
+          ],
+          boneColor: styles.pushupBone,
+          keypointColor: styles.pushupKeypoint,
+        };
       case '4': // Balance
-        return (
-          <View style={styles.exerciseGuideContainer} pointerEvents="none">
-            <View style={styles.balanceCircle} />
-            <Text style={styles.exerciseLabel}>Stand inside the circle</Text>
-          </View>
-        );
+        return {
+          edges: [
+            ['kp_5', 'kp_7'], ['kp_7', 'kp_9'], ['kp_6', 'kp_8'], ['kp_8', 'kp_10'],
+            ['kp_11', 'kp_13'], ['kp_13', 'kp_15'], ['kp_12', 'kp_14'], ['kp_14', 'kp_16'],
+          ],
+          boneColor: styles.balanceBone,
+          keypointColor: styles.balanceKeypoint,
+        };
       default:
-        return (
-          <View style={styles.exerciseGuideContainer} pointerEvents="none">
-            <View style={styles.genericBox} />
-            <Text style={styles.exerciseLabel}>{test.name}</Text>
-          </View>
-        );
+        return {
+          edges: [
+            ['kp_11', 'kp_13'], ['kp_13', 'kp_15'], ['kp_12', 'kp_14'], ['kp_14', 'kp_16'],
+            ['kp_23', 'kp_25'], ['kp_25', 'kp_27'], ['kp_24', 'kp_26'], ['kp_26', 'kp_28'],
+            ['kp_11', 'kp_12'], ['kp_23', 'kp_24'],
+          ],
+          boneColor: styles.dynamicBone,
+          keypointColor: styles.dynamicKeypoint,
+        };
     }
   };
 
   const cameraProps: any = {
     ref: cameraRef,
     style: styles.camera,
-    // prefer the CameraType enum when available
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore CameraType value usage
-    type: (CameraType as any)?.back ?? 'back',
-    // onCameraReady will signal when preview is active
-    onCameraReady,
+    facing: cameraType,
     ratio: '16:9',
   };
+
+  if (!cameraActivated) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Initializing camera...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.black} />
-      
-      {/* Debug badge: permission, cameraReady, recording state, and shallow cameraRef summary */}
-      <View style={styles.debugBadge} pointerEvents="none">
-        <Text style={styles.debugTitle}>CAMERA DEBUG</Text>
-        <Text style={styles.debugLine}>permission: {hasPermission === null ? 'pending' : hasPermission ? 'granted' : 'denied'}</Text>
-        <Text style={styles.debugLine}>cameraReady: {String(cameraReady)}</Text>
-        <Text style={styles.debugLine}>testStarted: {String(testStarted)}</Text>
-        <Text style={styles.debugLine}>isRecording: {String(isRecording)}</Text>
-        <Text style={styles.debugLine} numberOfLines={1} ellipsizeMode="tail">
-          refKeys: {cameraRef.current ? Object.keys(cameraRef.current).slice(0,6).join(',') : 'null'}
-        </Text>
-        <Text style={styles.debugLine} numberOfLines={1} ellipsizeMode="tail">
-          hasMethods: {cameraRef.current ? `${!!cameraRef.current.recordAsync? 'recordAsync ' : ''}${!!cameraRef.current.takePictureAsync? 'takePictureAsync ' : ''}${!!cameraRef.current.stopRecording? 'stopRecording' : ''}` : 'none'}
-        </Text>
-      </View>
 
-      <CameraWrapper {...cameraProps}>
-        {/* Overlay Controls */}
+      <CameraView {...cameraProps}>
         <Animated.View
           style={[
             styles.overlay,
@@ -477,17 +558,23 @@ const CameraTestScreen: React.FC = () => {
             >
               <Ionicons name="arrow-back" size={24} color={COLORS.white} />
             </TouchableOpacity>
-            
+
             <View style={styles.testInfo}>
               <Text style={styles.testName}>{test?.name}</Text>
               <Text style={styles.testDuration}>{test?.duration}s</Text>
             </View>
-            
+
             <TouchableOpacity
               style={styles.overlayToggle}
               onPress={toggleOverlay}
             >
               <Ionicons name="eye" size={24} color={COLORS.white} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cameraToggle}
+              onPress={toggleCamera}
+            >
+              <Ionicons name="camera-reverse" size={24} color={COLORS.white} />
             </TouchableOpacity>
           </View>
 
@@ -507,8 +594,7 @@ const CameraTestScreen: React.FC = () => {
                   onPress={handleStartTest}
                   style={styles.startButton}
                 />
-                {/* show framing guide while idle */}
-                {cameraReady && showOverlay && (
+                {showOverlay && (
                   <View style={styles.framingGuideContainer} pointerEvents="none">
                     {test?.category === 'fitness' || test?.category === 'strength' ? (
                       <View style={styles.framingRect} />
@@ -518,7 +604,6 @@ const CameraTestScreen: React.FC = () => {
                     <Text style={styles.framingLabel}>{test?.name} - Frame yourself inside the guide</Text>
                   </View>
                 )}
-                {/* visual start countdown */}
                 {countdown > 0 && (
                   <View style={styles.countdownOverlay} pointerEvents="none">
                     <Text style={styles.countdownText}>{countdown}</Text>
@@ -528,7 +613,6 @@ const CameraTestScreen: React.FC = () => {
               </View>
             ) : (
               <View style={styles.testContainer}>
-                {/* Timer */}
                 <View style={styles.timerContainer}>
                   <Animated.View
                     style={[
@@ -540,22 +624,19 @@ const CameraTestScreen: React.FC = () => {
                   </Animated.View>
                 </View>
 
-                {/* Instructions */}
                 <View style={styles.instructionsContainer}>
                   <Text style={styles.instructionText}>
                     {test?.instructions[currentStep] || 'Keep going!'}
                   </Text>
                 </View>
 
-                {/* Pose Guide */}
                 <View style={styles.poseGuide}>
                   <View style={styles.poseFrame}>
                     <Text style={styles.poseText}>📐</Text>
                   </View>
                   <Text style={styles.poseLabel}>AI Pose Detection Active</Text>
                 </View>
-                {/* show framing guide during test as subtle overlay */}
-                {cameraReady && showOverlay && (
+                {showOverlay && (
                   <View style={styles.framingGuideDuring} pointerEvents="none">
                     {test?.category === 'fitness' || test?.category === 'strength' ? (
                       <View style={styles.framingRectThin} />
@@ -566,7 +647,6 @@ const CameraTestScreen: React.FC = () => {
                 )}
               </View>
             )}
-            {/* visual end countdown (shown after test completes) */}
             {endCountdown > 0 && (
               <View style={styles.countdownOverlay} pointerEvents="none">
                 <Text style={styles.countdownText}>{endCountdown}</Text>
@@ -591,7 +671,7 @@ const CameraTestScreen: React.FC = () => {
                     isRecording && styles.recordingIcon
                   ]} />
                 </TouchableOpacity>
-                
+
                 <View style={styles.recordingInfo}>
                   <View style={[
                     styles.recordingIndicator,
@@ -609,64 +689,53 @@ const CameraTestScreen: React.FC = () => {
         {/* AI Overlay Elements */}
         {testStarted && (
           <View style={styles.aiOverlay} pointerEvents="none">
-            {/* Pose Detection Points (rendered from server keypoints) */}
             {overlayKeypoints && (
               <View style={StyleSheet.absoluteFill}>
-                {/* draw skeleton lines for a few connections */}
                 {(() => {
-                  const edges: Array<[string,string]> = [
-                    ['kp_11','kp_13'], // left shoulder -> left elbow
-                    ['kp_13','kp_15'], // left elbow -> left wrist
-                    ['kp_12','kp_14'], // right shoulder -> right elbow
-                    ['kp_14','kp_16'], // right elbow -> right wrist
-                    ['kp_23','kp_25'], // left hip -> left knee
-                    ['kp_25','kp_27'], // left knee -> left ankle
-                    ['kp_24','kp_26'], // right hip -> right knee
-                    ['kp_26','kp_28'], // right knee -> right ankle
-                    ['kp_11','kp_12'], // shoulders
-                    ['kp_23','kp_24'], // hips
-                  ];
-                  return edges.map(([a,b]) => {
-                    const pa = overlayKeypoints[a];
-                    const pb = overlayKeypoints[b];
-                    if (!pa || !pb) return null;
-                    const x1 = pa.x * screenWidth, y1 = pa.y * screenHeight;
-                    const x2 = pb.x * screenWidth, y2 = pb.y * screenHeight;
-                    const left = Math.min(x1,x2), top = Math.min(y1,y2);
-                    const width = Math.hypot(x2-x1, y2-y1);
-                    const angle = Math.atan2(y2-y1, x2-x1) * (180/Math.PI);
-                    return (
-                      <View key={`${a}-${b}`} style={[styles.bone, { left, top, width, transform: [{ rotate: `${angle}deg` }] }]} />
-                    );
-                  });
-                })()}
+                  if (!test) return null;
+                  const { edges, boneColor, keypointColor } = getPoseConfig(test.id);
 
-                {Object.entries(overlayKeypoints).map(([name, pt]) => {
-                  const leftNum = pt.x * screenWidth;
-                  const topNum = pt.y * screenHeight;
                   return (
-                    <View key={name} style={{ position: 'absolute', left: leftNum - 6, top: topNum - 6, alignItems: 'center' }}>
-                      <View style={styles.posePoint} />
-                      <Text style={{ color: COLORS.white, fontSize: 10 }}>{name.replace('kp_','')}</Text>
-                    </View>
+                    <>
+                      {edges.map(([a, b]) => {
+                        const pa = overlayKeypoints[a];
+                        const pb = overlayKeypoints[b];
+                        if (!pa || !pb) return null;
+                        const x1 = pa.x * screenWidth, y1 = pa.y * screenHeight;
+                        const x2 = pb.x * screenWidth, y2 = pb.y * screenHeight;
+                        const left = Math.min(x1, x2), top = Math.min(y1, y2);
+                        const width = Math.hypot(x2 - x1, y2 - y1);
+                        const angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
+                        return (
+                          <View key={`${a}-${b}`} style={[boneColor, { left, top, width, transform: [{ rotate: `${angle}deg` }] }]} />
+                        );
+                      })}
+                      {Object.entries(overlayKeypoints).map(([name, pt]) => {
+                        const leftNum = pt.x * screenWidth;
+                        const topNum = pt.y * screenHeight;
+                        return (
+                          <View key={name} style={{ position: 'absolute', left: leftNum - 5, top: topNum - 5 }}>
+                            <View style={keypointColor} />
+                          </View>
+                        );
+                      })}
+                    </>
                   );
-                })}
+                })()}
               </View>
             )}
 
-            {/* Movement Guide Lines (static guides) */}
             <View style={styles.guideLines}>
               <View style={[styles.guideLine, styles.guideLine1]} />
               <View style={[styles.guideLine, styles.guideLine2]} />
             </View>
-            {/* rep count badge */}
             <View style={styles.repBadge} pointerEvents="none">
               <Text style={{ color: COLORS.white, fontWeight: '700' }}>{repCount}</Text>
               <Text style={{ color: COLORS.white, fontSize: 12 }}>reps</Text>
             </View>
           </View>
         )}
-  </CameraWrapper>
+      </CameraView>
     </SafeAreaView>
   );
 };
@@ -722,6 +791,15 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cameraToggle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: SPACING.sm,
   },
   centerContent: {
     flex: 1,
@@ -863,12 +941,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     pointerEvents: 'none',
   },
-  posePoints: {
-    position: 'absolute',
-    top: '30%',
-    left: '50%',
-    transform: [{ translateX: -50 }, { translateY: -50 }],
-  },
   posePoint: {
     position: 'absolute',
     width: 8,
@@ -877,22 +949,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     borderWidth: 2,
     borderColor: COLORS.white,
-  },
-  posePoint1: {
-    top: 0,
-    left: 0,
-  },
-  posePoint2: {
-    top: 50,
-    left: -25,
-  },
-  posePoint3: {
-    top: 50,
-    left: 25,
-  },
-  posePoint4: {
-    top: 100,
-    left: 0,
   },
   guideLines: {
     position: 'absolute',
@@ -918,9 +974,8 @@ const styles = StyleSheet.create({
   },
   bone: {
     position: 'absolute',
-    height: 2,
-    backgroundColor: COLORS.primary,
-    transform: [{ rotate: '0deg' }],
+    height: 4,
+    backgroundColor: COLORS.white,
     borderRadius: 2,
   },
   repBadge: {
@@ -999,26 +1054,6 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(99,102,241,0.9)',
     backgroundColor: 'transparent',
-  },
-  debugBadge: {
-    position: 'absolute',
-    left: 12,
-    top: 12,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    padding: SPACING.sm,
-    borderRadius: 8,
-    zIndex: 50,
-  },
-  debugTitle: {
-    color: COLORS.white,
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  debugLine: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 11,
-    lineHeight: 14,
   },
   exerciseGuideContainer: {
     position: 'absolute',
@@ -1128,6 +1163,291 @@ const styles = StyleSheet.create({
   },
   errorButton: {
     minWidth: 150,
+  },
+  poseOutline: {
+    position: 'absolute',
+    top: '30%',
+    left: '50%',
+    transform: [{ translateX: -50 }, { translateY: -50 }],
+    alignItems: 'center',
+  },
+  headCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    backgroundColor: 'transparent',
+  },
+  bodyLine: {
+    width: 2,
+    height: 40,
+    backgroundColor: COLORS.primary,
+    marginTop: 5,
+  },
+  armLineLeft: {
+    position: 'absolute',
+    top: 10,
+    left: -15,
+    width: 15,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '45deg' }],
+  },
+  armLineRight: {
+    position: 'absolute',
+    top: 10,
+    right: -15,
+    width: 15,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '-45deg' }],
+  },
+  legLineLeft: {
+    position: 'absolute',
+    top: 45,
+    left: -5,
+    width: 2,
+    height: 30,
+    backgroundColor: COLORS.primary,
+  },
+  legLineRight: {
+    position: 'absolute',
+    top: 45,
+    right: -5,
+    width: 2,
+    height: 30,
+    backgroundColor: COLORS.primary,
+  },
+  armLinePushupLeft: {
+    position: 'absolute',
+    top: 15,
+    left: -20,
+    width: 20,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '90deg' }],
+  },
+  armLinePushupRight: {
+    position: 'absolute',
+    top: 15,
+    right: -20,
+    width: 20,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '90deg' }],
+  },
+  legLinePushup: {
+    position: 'absolute',
+    top: 45,
+    left: '50%',
+    transform: [{ translateX: -1 }],
+    width: 2,
+    height: 40,
+    backgroundColor: COLORS.primary,
+  },
+  armLineRunLeft: {
+    position: 'absolute',
+    top: 10,
+    left: -20,
+    width: 20,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '135deg' }],
+  },
+  armLineRunRight: {
+    position: 'absolute',
+    top: 10,
+    right: -20,
+    width: 20,
+    height: 2,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '45deg' }],
+  },
+  legLineRunLeft: {
+    position: 'absolute',
+    top: 45,
+    left: -10,
+    width: 2,
+    height: 30,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '15deg' }],
+  },
+  legLineRunRight: {
+    position: 'absolute',
+    top: 45,
+    right: -10,
+    width: 2,
+    height: 30,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '-15deg' }],
+  },
+  armLineBalanceLeft: {
+    position: 'absolute',
+    top: 10,
+    left: -10,
+    width: 10,
+    height: 2,
+    backgroundColor: COLORS.primary,
+  },
+  armLineBalanceRight: {
+    position: 'absolute',
+    top: 10,
+    right: -10,
+    width: 10,
+    height: 2,
+    backgroundColor: COLORS.primary,
+  },
+  legLineBalance: {
+    position: 'absolute',
+    top: 45,
+    left: '50%',
+    transform: [{ translateX: -1 }],
+    width: 2,
+    height: 20,
+    backgroundColor: COLORS.primary,
+  },
+  disclaimerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    padding: SPACING.lg,
+  },
+  disclaimerContent: {
+    backgroundColor: COLORS.white,
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.xl,
+    alignItems: 'center',
+    maxWidth: '90%',
+    ...SHADOWS.md,
+  },
+  disclaimerTitle: {
+    fontSize: FONT_SIZES.xxl,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: SPACING.lg,
+    marginBottom: SPACING.md,
+  },
+  disclaimerText: {
+    fontSize: FONT_SIZES.md,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginBottom: SPACING.md,
+  },
+  disclaimerPoints: {
+    alignSelf: 'stretch',
+    marginBottom: SPACING.lg,
+  },
+  disclaimerPoint: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.text,
+    marginBottom: SPACING.xs,
+    lineHeight: 20,
+  },
+  disclaimerNote: {
+    fontSize: FONT_SIZES.xs,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    marginBottom: SPACING.xl,
+  },
+  disclaimerButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  disclaimerDeclineButton: {
+    flex: 1,
+    backgroundColor: COLORS.error,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    alignItems: 'center',
+    marginRight: SPACING.sm,
+  },
+  disclaimerDeclineText: {
+    color: COLORS.white,
+    fontSize: FONT_SIZES.md,
+    fontWeight: '600',
+  },
+  disclaimerAcceptButton: {
+    flex: 2,
+    backgroundColor: COLORS.primary,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    alignItems: 'center',
+    marginLeft: SPACING.sm,
+  },
+  disclaimerAcceptText: {
+    color: COLORS.white,
+    fontSize: FONT_SIZES.md,
+    fontWeight: '600',
+  },
+  dynamicBone: {
+    position: 'absolute',
+    height: 3,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '0deg' }],
+    borderRadius: 1.5,
+  },
+  dynamicKeypoint: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+  },
+  balanceKeypoint: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.secondary,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+  },
+  pushupKeypoint: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+  },
+  balanceBone: {
+    position: 'absolute',
+    height: 3,
+    backgroundColor: COLORS.secondary,
+    transform: [{ rotate: '0deg' }],
+    borderRadius: 1.5,
+  },
+  pushupBone: {
+    position: 'absolute',
+    height: 3,
+    backgroundColor: COLORS.primary,
+    transform: [{ rotate: '0deg' }],
+    borderRadius: 1.5,
+  },
+  debugBadge: {
+    position: 'absolute',
+    left: 12,
+    top: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: SPACING.sm,
+    borderRadius: 8,
+    zIndex: 50,
+  },
+  debugTitle: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  debugLine: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 11,
+    lineHeight: 14,
   },
 });
 
